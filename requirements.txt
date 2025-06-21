@@ -4,4 +4,5 @@ plotly
 python-docx
 openpyxl
 scikit-learn
-seaborn 
+seaborn
+kaleido 

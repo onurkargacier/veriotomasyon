@@ -1,8 +1,7 @@
-pandas==1.5.3
-numpy==1.22.4
-scikit-learn==1.2.2
-pycaret==2.3.10
 streamlit
+pandas
 plotly
 python-docx
-openpyxl 
+openpyxl
+scikit-learn
+seaborn 

@@ -8,13 +8,16 @@ from datetime import datetime
 from docx import Document
 from docx.shared import Inches
 import os
+import seaborn as sns
+import matplotlib.pyplot as plt
 
-from pycaret.classification import (
-    setup as cls_setup, compare_models as cls_compare, pull as cls_pull, get_config as cls_get_config, predict_model as cls_predict_model
-)
-from pycaret.regression import (
-    setup as reg_setup, compare_models as reg_compare, pull as reg_pull, get_config as reg_get_config, predict_model as reg_predict_model
-)
+# Scikit-learn kütüphanelerini import edelim
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, r2_score, mean_absolute_error
 
 # Güvenlik ayarları
 st.set_page_config(
@@ -377,61 +380,122 @@ else:
             if not target:
                 st.warning("Lütfen modelleme için bir hedef değişkeni seçin.")
             else:
-                with st.spinner("Modelleme başlatılıyor, lütfen bekleyin..."):
-                    best_model = None
-                    if problem_type == "regression":
-                        reg_setup(df_model, target=target, session_id=42, verbose=False)
-                        best_model = reg_compare()
-                        results = reg_pull()
-                    else: # classification
-                        value_counts = df_model[target].value_counts()
-                        valid_classes = value_counts[value_counts > 1].index
-                        df_filtered = df_model[df_model[target].isin(valid_classes)]
-                        if len(valid_classes) < 2:
-                            st.error("Sınıflandırma için en az 2 farklı ve yeterli örneğe sahip sınıf olmalı!")
-                        else:
-                            cls_setup(df_filtered, target=target, session_id=42, verbose=False)
-                            best_model = cls_compare()
-                            results = cls_pull()
-                    
-                    if best_model:
-                        st.write("#### Model Karşılaştırma Sonuçları")
-                        st.dataframe(results, use_container_width=True)
-                        st.success(f"En iyi model: {str(best_model)}")
+                with st.spinner("Model için veriler hazırlanıyor ve eğitiliyor, lütfen bekleyin..."):
+                    try:
+                        # Adım 1: Veriyi Hazırlama
+                        df_model = df.dropna(subset=[target])
+                        X = df_model.drop(target, axis=1)
+                        y = df_model[target]
 
-                        setup_func = reg_setup if problem_type == "regression" else cls_setup
-                        get_config_func = reg_get_config if problem_type == "regression" else cls_get_config
-                        predict_func = reg_predict_model if problem_type == "regression" else cls_predict_model
+                        # Sütunları sayısal ve kategorik olarak ayır
+                        numeric_features = X.select_dtypes(include=['number']).columns
+                        categorical_features = X.select_dtypes(include=['object', 'category']).columns
+
+                        # Adım 2: Veri Ön İşleme Hattı (Pipeline) Oluşturma
+                        # Bu hat, sayısal verileri ölçeklendirir ve kategorik verileri one-hot encoding yapar.
+                        preprocessor = ColumnTransformer(
+                            transformers=[
+                                ('num', StandardScaler(), numeric_features),
+                                ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)
+                            ])
+
+                        # Adım 3: Model Seçimi ve Pipeline'ı Tamamlama
+                        if problem_type == "regression":
+                            model = RandomForestRegressor(n_estimators=100, random_state=42)
+                            st.session_state.model_type = "Regresyon"
+                        else: # classification
+                            # Sınıflandırma için target'ın en az 2 sınıfı olduğundan emin ol
+                            if y.nunique() < 2:
+                                 st.error("Sınıflandırma için hedef değişkende en az 2 farklı sınıf olmalıdır.")
+                                 st.stop()
+                            model = RandomForestClassifier(n_estimators=100, random_state=42)
+                            st.session_state.model_type = "Sınıflandırma"
+
+                        # Ön işlemci ve modeli birleştir
+                        pipeline = Pipeline(steps=[('preprocessor', preprocessor),
+                                                  ('model', model)])
+
+                        # Adım 4: Veriyi Eğitim ve Test Olarak Ayırma ve Modeli Eğitme
+                        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+                        pipeline.fit(X_train, y_train)
                         
-                        st.write("#### Önemli Değişkenler (Feature Importance)")
-                        try:
-                            # Farklı model tipleri için özellik önemini güvenli bir şekilde çıkarma
-                            if hasattr(best_model, 'feature_importances_'):
-                                # Tree-based models (Random Forest, XGBoost, etc.)
-                                fi_df = pd.DataFrame({
-                                    'feature': get_config_func("X_train").columns, 
-                                    'importance': best_model.feature_importances_
-                                })
-                            elif hasattr(best_model, 'coef_'):
-                                # Linear models (Linear Regression, Logistic Regression, etc.)
-                                fi_df = pd.DataFrame({
-                                    'feature': get_config_func("X_train").columns, 
-                                    'importance': abs(best_model.coef_[0] if best_model.coef_.ndim > 1 else best_model.coef_)
-                                })
-                            else:
-                                # Diğer model tipleri için
-                                st.info("Bu model tipi için özellik önemi grafiği oluşturulamıyor.")
-                                fi_df = None
-                            
-                            if fi_df is not None:
-                                st.bar_chart(fi_df.set_index('feature').sort_values(by='importance', ascending=False), use_container_width=True)
-                        except Exception as e:
-                            st.info(f"Bu model için özellik önemi grafiği oluşturulamıyor: {str(e)}")
+                        # Tahminleri yap
+                        y_pred = pipeline.predict(X_test)
+                        
+                        st.session_state.model_pipeline = pipeline
+                        st.session_state.X_test = X_test
+                        st.session_state.y_test = y_test
+                        st.session_state.y_pred = y_pred
 
-                        st.write("#### Tahminler (Test Verisi Üzerinden)")
-                        pred_df = predict_func(best_model)
-                        show_cols = [target, 'prediction_label' if 'prediction_label' in pred_df.columns else 'prediction_score']
-                        st.dataframe(pred_df[show_cols].head(10), use_container_width=True)
+                        st.success("✅ Modelleme başarıyla tamamlandı! Sonuçlar aşağıdadır.")
+
+                    except Exception as e:
+                        st.error(f"Modelleme sırasında bir hata oluştu: {e}")
+                        st.stop()
+
+    # --- Model Sonuçlarını Gösterme ---
+    if 'model_pipeline' in st.session_state:
+        st.markdown("<h3>🤖 Model Sonuçları ve Yorumlama</h3>", unsafe_allow_html=True)
+        
+        # Sonuçları getirelim
+        pipeline = st.session_state.model_pipeline
+        X_test = st.session_state.X_test
+        y_test = st.session_state.y_test
+        y_pred = st.session_state.y_pred
+        model_type = st.session_state.model_type
+
+        if model_type == "Regresyon":
+            st.write("#### Regresyon Model Performansı")
+            r2 = r2_score(y_test, y_pred)
+            mae = mean_absolute_error(y_test, y_pred)
+            st.metric("R-kare Skoru (R²)", f"{r2:.2f}")
+            st.metric("Ortalama Mutlak Hata (MAE)", f"{mae:.2f}")
+            
+            st.write("R-kare, modelin hedef değişkendeki varyansın ne kadarını açıkladığını gösterir. 1'e ne kadar yakınsa o kadar iyidir. MAE, tahminlerin gerçek değerlerden ortalama ne kadar saptığını gösterir.")
+
+            # Tahmin vs Gerçek Değer Grafiği
+            fig_pred = px.scatter(x=y_test, y=y_pred, labels={'x': 'Gerçek Değerler', 'y': 'Tahmin Edilen Değerler'},
+                                  title="Gerçek ve Tahmin Edilen Değerlerin Karşılaştırılması")
+            fig_pred.add_shape(type='line', x0=y_test.min(), y0=y_test.min(), x1=y_test.max(), y1=y_test.max(), line=dict(color='Red'))
+            st.plotly_chart(fig_pred, use_container_width=True)
+
+        else: # Sınıflandırma
+            st.write("#### Sınıflandırma Model Performansı")
+            accuracy = accuracy_score(y_test, y_pred)
+            st.metric("Doğruluk (Accuracy)", f"{accuracy:.2%}")
+            
+            st.text("Sınıflandırma Raporu:")
+            report = classification_report(y_test, y_pred, output_dict=True)
+            st.dataframe(pd.DataFrame(report).transpose())
+
+            # Karışıklık Matrisi (Confusion Matrix)
+            st.write("#### Karışıklık Matrisi (Confusion Matrix)")
+            st.info("Bu matris, modelin hangi sınıfları doğru, hangilerini yanlış tahmin ettiğini gösterir. Köşegen üzerindeki sayılar doğru tahminlerdir.")
+            cm = confusion_matrix(y_test, y_pred, labels=pipeline.classes_)
+            fig_cm = plt.figure(figsize=(8, 6))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=pipeline.classes_, yticklabels=pipeline.classes_)
+            plt.xlabel('Tahmin Edilen Sınıf')
+            plt.ylabel('Gerçek Sınıf')
+            st.pyplot(fig_cm)
+
+        # Özellik Önem Sıralaması (Feature Importance) - Her iki model için de ortak
+        st.write("<h3>🎯 Sonucu En Çok Ne Etkiliyor? (Özellik Önem Sıralaması)</h3>", unsafe_allow_html=True)
+        try:
+            # Pipeline'dan one-hot encoder ile oluşturulan yeni sütun isimlerini alalım
+            ohe_feature_names = pipeline.named_steps['preprocessor'].named_transformers_['cat'].get_feature_names_out(X.select_dtypes(include=['object', 'category']).columns)
+            # Sayısal sütun isimlerini de ekleyelim
+            all_feature_names = list(X.select_dtypes(include=['number']).columns) + list(ohe_feature_names)
+            
+            importances = pipeline.named_steps['model'].feature_importances_
+            feature_importance_df = pd.DataFrame(list(zip(all_feature_names, importances)), columns=['Özellik', 'Önem']).sort_values('Önem', ascending=False)
+            
+            # En önemli 15 özelliği gösterelim
+            fig_fi = px.bar(feature_importance_df.head(15), x='Önem', y='Özellik', orientation='h', title='En Önemli 15 Özellik')
+            fig_fi.update_layout(yaxis={'categoryorder':'total ascending'})
+            st.plotly_chart(fig_fi, use_container_width=True)
+            st.info("Bu grafik, modelin tahmin yaparken hangi sütunlara daha fazla 'önem' verdiğini gösterir. Yüksek çubuklar, sonucun belirlenmesinde daha etkilidir.")
+        except Exception as e:
+            st.warning(f"Özellik önemi grafiği oluşturulamadı: {e}")
 
     with tab5:
         st.markdown("<h2>📄 Otomatik Raporlama ve İndir</h2>", unsafe_allow_html=True)
